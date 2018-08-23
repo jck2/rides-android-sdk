@@ -50,6 +50,7 @@ public class AppProtocol {
         HashSet<String> set = new HashSet<>();
         set.add(UBER_RIDER_HASH);
         set.add(UBER_EATS_HASH);
+        set.add("9853da30f352922979ef0ee527b922e58e23423b");
         return set;
     }
 

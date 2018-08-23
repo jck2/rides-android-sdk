@@ -39,8 +39,11 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import com.uber.sdk.android.core.BuildConfig;
 import com.uber.sdk.android.core.R;
+import com.uber.sdk.android.core.install.SignupDeeplink;
 import com.uber.sdk.android.core.utils.CustomTabsHelper;
+import com.uber.sdk.core.client.Session;
 import com.uber.sdk.core.client.SessionConfiguration;
 
 /**
@@ -48,16 +51,18 @@ import com.uber.sdk.core.client.SessionConfiguration;
  */
 public class LoginActivity extends Activity {
 
+    private static final String USER_AGENT = String.format("core-android-v%s-login_manager", BuildConfig.VERSION_NAME);
+
     static final String EXTRA_RESPONSE_TYPE = "RESPONSE_TYPE";
     static final String EXTRA_SESSION_CONFIGURATION = "SESSION_CONFIGURATION";
     static final String EXTRA_FORCE_WEBVIEW = "FORCE_WEBVIEW";
+    static final String EXTRA_SSO_ENABLED = "SSO_ENABLED";
 
     static final String ERROR = "error";
 
     private WebView webView;
     private ResponseType responseType;
     private SessionConfiguration sessionConfiguration;
-    private LoginManager loginManager;
     private boolean authStarted;
 
     /**
@@ -93,10 +98,22 @@ public class LoginActivity extends Activity {
             @NonNull ResponseType responseType,
             boolean forceWebview) {
 
+        return newIntent(context, sessionConfiguration, responseType, forceWebview, false);
+    }
+
+    @NonNull
+    public static Intent newIntent(
+            @NonNull Context context,
+            @NonNull SessionConfiguration sessionConfiguration,
+            @NonNull ResponseType responseType,
+            boolean forceWebview,
+            boolean isSsoEnabled) {
+
         final Intent data = new Intent(context, LoginActivity.class)
                 .putExtra(EXTRA_SESSION_CONFIGURATION, sessionConfiguration)
                 .putExtra(EXTRA_RESPONSE_TYPE, responseType)
-                .putExtra(EXTRA_FORCE_WEBVIEW, forceWebview);
+                .putExtra(EXTRA_FORCE_WEBVIEW, forceWebview)
+                .putExtra(EXTRA_SSO_ENABLED, isSsoEnabled);
 
         return data;
     }
@@ -147,37 +164,62 @@ public class LoginActivity extends Activity {
         if(getIntent().getData() != null) {
             handleResponse(getIntent().getData());
         } else {
-            loadUrl();
+            sessionConfiguration = (SessionConfiguration) getIntent().getSerializableExtra(EXTRA_SESSION_CONFIGURATION);
+            if (sessionConfiguration == null) {
+                onError(AuthenticationError.UNAVAILABLE);
+                return;
+            }
+
+            if ((sessionConfiguration.getScopes() == null || sessionConfiguration.getScopes().isEmpty())
+                    && (sessionConfiguration.getCustomScopes() == null  || sessionConfiguration.getCustomScopes().isEmpty())) {
+                onError(AuthenticationError.INVALID_SCOPE);
+                return;
+            }
+
+            responseType = (ResponseType) getIntent().getSerializableExtra(EXTRA_RESPONSE_TYPE);
+            if (responseType == null) {
+                onError(AuthenticationError.UNAVAILABLE);
+            }
+
+            String redirectUri = sessionConfiguration.getRedirectUri() != null ? sessionConfiguration
+                    .getRedirectUri() : getApplicationContext().getPackageName() + "uberauth";
+
+            if (getIntent().getBooleanExtra(EXTRA_SSO_ENABLED, false)) {
+                SsoDeeplink ssoDeeplink = new SsoDeeplink.Builder(this)
+                        .clientId(sessionConfiguration.getClientId())
+                        .scopes(sessionConfiguration.getScopes())
+                        .customScopes(sessionConfiguration.getCustomScopes())
+                        .activityRequestCode(SsoDeeplink.DEFAULT_REQUEST_CODE)
+                        .redirectUri(sessionConfiguration.getRedirectUri())
+                        .build();
+
+                if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.REDIRECT_TO_SDK)) {
+                    ssoDeeplink.execute(SsoDeeplink.FlowVersion.REDIRECT_TO_SDK);
+                    return;
+                }
+            }
+
+            if (responseType == ResponseType.CODE) {
+                loadUrl(redirectUri, ResponseType.CODE, sessionConfiguration);
+            } else if (responseType == ResponseType.TOKEN && !AuthUtils.isPrivilegeScopeRequired(sessionConfiguration.getScopes())) {
+                loadUrl(redirectUri, ResponseType.TOKEN, sessionConfiguration);
+            } else {
+                redirectToInstallApp(this);
+            }
         }
     }
 
-    protected void loadUrl() {
-        sessionConfiguration = (SessionConfiguration) getIntent().getSerializableExtra(EXTRA_SESSION_CONFIGURATION);
-        if (sessionConfiguration == null) {
-            onError(AuthenticationError.UNAVAILABLE);
-            return;
-        }
-
-        if ((sessionConfiguration.getScopes() == null || sessionConfiguration.getScopes().isEmpty())
-                && (sessionConfiguration.getCustomScopes() == null  || sessionConfiguration.getCustomScopes().isEmpty())) {
-            onError(AuthenticationError.INVALID_SCOPE);
-            return;
-        }
-
-        responseType = (ResponseType) getIntent().getSerializableExtra(EXTRA_RESPONSE_TYPE);
-        if (responseType == null) {
-            onError(AuthenticationError.UNAVAILABLE);
-        }
-
-        String redirectUri = sessionConfiguration.getRedirectUri() != null ? sessionConfiguration
-                .getRedirectUri() : getApplicationContext().getPackageName() + "uberauth";
-
+    protected void loadUrl(String redirectUri, ResponseType responseType, SessionConfiguration sessionConfiguration) {
         String url = AuthUtils.buildUrl(redirectUri, responseType, sessionConfiguration);
         if (getIntent().getBooleanExtra(EXTRA_FORCE_WEBVIEW, false)) {
             loadWebview(url, redirectUri);
         } else {
             loadChrometab(url);
         }
+    }
+
+    private void redirectToInstallApp(@NonNull Activity activity) {
+        new SignupDeeplink(activity, sessionConfiguration.getClientId(), USER_AGENT).execute();
     }
 
     protected boolean handleResponse(@NonNull Uri uri) {

@@ -24,22 +24,22 @@ package com.uber.sdk.android.core.auth;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.annotation.VisibleForTesting;
 import android.util.Log;
-import android.util.Pair;
 import com.uber.sdk.android.core.BuildConfig;
 import com.uber.sdk.android.core.Deeplink;
-import com.uber.sdk.android.core.SupportedAppType;
 import com.uber.sdk.android.core.utils.AppProtocol;
 import com.uber.sdk.core.auth.Scope;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 
 import static com.uber.sdk.android.core.SupportedAppType.UBER;
@@ -62,10 +62,17 @@ public class SsoDeeplink implements Deeplink {
     @VisibleForTesting
     static final int MIN_UBER_EATS_VERSION_SUPPORTED = 983;
 
+    @VisibleForTesting
+    static final int MIN_UBER_RIDES_VERSION_REDIRECT_FLOW_SUPPORTED = 31302;
+    @VisibleForTesting
+    static final int MIN_UBER_EATS_VERSION_REDIRECT_FLOW_SUPPORTED = 983;
+
     private static final String URI_QUERY_CLIENT_ID = "client_id";
     private static final String URI_QUERY_SCOPE = "scope";
     private static final String URI_QUERY_PLATFORM = "sdk";
     private static final String URI_QUERY_SDK_VERSION = "sdk_version";
+    private static final String URI_QUERY_FLOW_TYPE = "flow_type";
+    private static final String URI_QUERY_REDIRECT = "redirect_uri";
     private static final String URI_HOST = "connect";
 
     private final Activity activity;
@@ -74,6 +81,7 @@ public class SsoDeeplink implements Deeplink {
     private final Collection<Scope> requestedScopes;
     private final Collection<String> requestedCustomScopes;
     private final int requestCode;
+    private final String redirectUri;
 
     private SsoDeeplink(
             @NonNull Activity activity,
@@ -81,10 +89,12 @@ public class SsoDeeplink implements Deeplink {
             @NonNull String clientId,
             @NonNull Collection<Scope> requestedScopes,
             @NonNull Collection<String> requestedCustomScopes,
-            int requestCode) {
+            int requestCode,
+            @Nullable String redirectUri) {
         this.activity = activity;
         this.appProtocol = appProtocol;
         this.clientId = clientId;
+        this.redirectUri = redirectUri;
         this.requestCode = requestCode;
         this.requestedScopes = requestedScopes;
         this.requestedCustomScopes = requestedCustomScopes;
@@ -98,36 +108,57 @@ public class SsoDeeplink implements Deeplink {
      */
     @Override
     public void execute() {
-        checkState(isSupported(), "Single sign on is not supported on the device. " +
+        execute(FlowVersion.DEFAULT);
+    }
+
+    public void execute(FlowVersion flowVersion) {
+        checkState(isSupported(flowVersion), "Single sign on is not supported on the device. " +
                 "Please install or update to the latest version of Uber app.");
 
         Intent intent = new Intent(Intent.ACTION_VIEW);
-        final Uri deepLinkUri = createSsoUri();
+        final Uri deepLinkUri = createSsoUri(flowVersion);
         intent.setData(deepLinkUri);
 
         List<PackageInfo> validatedPackages = new ArrayList<>();
-        validatedPackages.addAll(appProtocol.getInstalledPackages(activity, UBER, MIN_UBER_RIDES_VERSION_SUPPORTED));
-        validatedPackages.addAll(appProtocol.getInstalledPackages(activity, UBER_EATS, MIN_UBER_EATS_VERSION_SUPPORTED));
+        int expectedRidesVersion = flowVersion == FlowVersion.REDIRECT_TO_SDK
+                ? MIN_UBER_RIDES_VERSION_REDIRECT_FLOW_SUPPORTED
+                : MIN_UBER_RIDES_VERSION_SUPPORTED;
+        int expectedEatsVersion = flowVersion == FlowVersion.REDIRECT_TO_SDK
+                ? MIN_UBER_EATS_VERSION_REDIRECT_FLOW_SUPPORTED
+                : MIN_UBER_EATS_VERSION_SUPPORTED;
+
+        validatedPackages.addAll(appProtocol.getInstalledPackages(activity, UBER, expectedRidesVersion));
+        validatedPackages.addAll(appProtocol.getInstalledPackages(activity, UBER_EATS, expectedEatsVersion));
 
         if(!validatedPackages.isEmpty()) {
             intent.setPackage(validatedPackages.get(0).packageName);
         }
-        activity.startActivityForResult(intent, requestCode);
+        if (flowVersion == FlowVersion.DEFAULT) {
+            activity.startActivityForResult(intent, requestCode);
+        } else {
+            activity.startActivity(intent);
+        }
     }
 
-    private Uri createSsoUri() {
+    private Uri createSsoUri(FlowVersion flowVersion) {
         String scopes = AuthUtils.scopeCollectionToString(requestedScopes);
         if (!requestedCustomScopes.isEmpty()) {
             scopes = AuthUtils.mergeScopeStrings(scopes,
                     AuthUtils.customScopeCollectionToString(requestedCustomScopes));
         }
-        return new Uri.Builder().scheme(Deeplink.DEEPLINK_SCHEME)
+        Uri.Builder uriBuilder = new Uri.Builder().scheme(Deeplink.DEEPLINK_SCHEME)
                 .authority(URI_HOST)
                 .appendQueryParameter(URI_QUERY_CLIENT_ID, clientId)
                 .appendQueryParameter(URI_QUERY_SCOPE, scopes)
                 .appendQueryParameter(URI_QUERY_PLATFORM, AppProtocol.PLATFORM)
                 .appendQueryParameter(URI_QUERY_SDK_VERSION, BuildConfig.VERSION_NAME)
-                .build();
+                .appendQueryParameter(URI_QUERY_FLOW_TYPE, flowVersion.name())
+                .appendQueryParameter(URI_QUERY_REDIRECT, getRedirectUri());
+        return uriBuilder.build();
+    }
+
+    private String getRedirectUri() {
+        return redirectUri == null ? activity.getPackageName() + "uberauth" : redirectUri;
     }
 
     /**
@@ -137,8 +168,27 @@ public class SsoDeeplink implements Deeplink {
      */
     @Override
     public boolean isSupported() {
-        return appProtocol.isInstalled(activity, UBER, MIN_UBER_RIDES_VERSION_SUPPORTED)
-            || appProtocol.isInstalled(activity, UBER_EATS, MIN_UBER_EATS_VERSION_SUPPORTED);
+        return isSupported(FlowVersion.DEFAULT);
+    }
+
+    public boolean isSupported(FlowVersion flowVersion) {
+        int expectedRidesVersion = flowVersion == FlowVersion.REDIRECT_TO_SDK
+                ? MIN_UBER_RIDES_VERSION_REDIRECT_FLOW_SUPPORTED
+                : MIN_UBER_RIDES_VERSION_SUPPORTED;
+        int expectedEatsVersion = flowVersion == FlowVersion.REDIRECT_TO_SDK
+                ? MIN_UBER_EATS_VERSION_REDIRECT_FLOW_SUPPORTED
+                : MIN_UBER_EATS_VERSION_SUPPORTED;
+
+        if (flowVersion == FlowVersion.REDIRECT_TO_SDK) {
+            Intent redirectIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(getRedirectUri()));
+            ActivityInfo activityInfo = redirectIntent.resolveActivityInfo(activity.getPackageManager(), PackageManager.MATCH_DEFAULT_ONLY);
+            if (activityInfo == null || !activityInfo.packageName.equals(activity.getPackageName())) {
+                return false;
+            }
+        }
+
+        return appProtocol.isInstalled(activity, UBER, expectedRidesVersion)
+                || appProtocol.isInstalled(activity, UBER_EATS, expectedEatsVersion);
     }
 
     public static class Builder {
@@ -146,6 +196,7 @@ public class SsoDeeplink implements Deeplink {
         private final Activity activity;
         private AppProtocol appProtocol;
         private String clientId;
+        private String redirectUri;
         private Collection<Scope> requestedScopes;
         private Collection<String> requestedCustomScopes;
         private int requestCode = DEFAULT_REQUEST_CODE;
@@ -185,6 +236,11 @@ public class SsoDeeplink implements Deeplink {
             return this;
         }
 
+        Builder redirectUri(@NonNull String redirecUri) {
+            this.redirectUri = redirecUri;
+            return this;
+        }
+
         public SsoDeeplink build() {
             checkNotNull(clientId, "Client Id must be set");
 
@@ -207,7 +263,14 @@ public class SsoDeeplink implements Deeplink {
                     clientId,
                     requestedScopes,
                     requestedCustomScopes,
-                    requestCode);
+                    requestCode,
+                    redirectUri);
         }
+    }
+
+    /** Defines which client implementation of the SSO flow to use */
+    public enum FlowVersion {
+        DEFAULT,
+        REDIRECT_TO_SDK;
     }
 }

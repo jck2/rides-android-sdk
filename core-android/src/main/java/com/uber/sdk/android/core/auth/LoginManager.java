@@ -87,9 +87,6 @@ public class LoginManager {
 
     static final int REQUEST_CODE_LOGIN_DEFAULT = 1001;
 
-    private static final String USER_AGENT = String.format("core-android-v%s-login_manager",
-            BuildConfig.VERSION_NAME);
-
     private final AccessTokenStorage accessTokenStorage;
     private final LoginCallback callback;
     private final SessionConfiguration sessionConfiguration;
@@ -177,16 +174,18 @@ public class LoginManager {
                 .scopes(sessionConfiguration.getScopes())
                 .customScopes(sessionConfiguration.getCustomScopes())
                 .activityRequestCode(requestCode)
+                .redirectUri(sessionConfiguration.getRedirectUri())
                 .build();
 
-        if (ssoDeeplink.isSupported()) {
-            ssoDeeplink.execute();
+        if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.REDIRECT_TO_SDK)) {
+            Intent intent = LoginActivity.newIntent(activity, sessionConfiguration, ResponseType.TOKEN, false, true);
+            activity.startActivityForResult(intent, requestCode);
+        } else if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.DEFAULT)) {
+            ssoDeeplink.execute(SsoDeeplink.FlowVersion.DEFAULT);
         } else if (isAuthCodeFlowEnabled()) {
             loginForAuthorizationCode(activity);
-        } else if (!AuthUtils.isPrivilegeScopeRequired(sessionConfiguration.getScopes())) {
-            loginForImplicitGrant(activity);
         } else {
-            redirectToInstallApp(activity);
+            loginForImplicitGrant(activity);
         }
     }
 
@@ -202,7 +201,7 @@ public class LoginManager {
         }
 
         Intent intent = LoginActivity.newIntent(activity, sessionConfiguration,
-                ResponseType.TOKEN, legacyUriRedirectHandler.isLegacyMode());
+                ResponseType.TOKEN, legacyUriRedirectHandler.isLegacyMode(), false);
         activity.startActivityForResult(intent, requestCode);
     }
 
@@ -217,7 +216,7 @@ public class LoginManager {
         }
 
         Intent intent = LoginActivity.newIntent(activity, sessionConfiguration,
-                ResponseType.CODE, legacyUriRedirectHandler.isLegacyMode());
+                ResponseType.CODE, legacyUriRedirectHandler.isLegacyMode(), false);
         activity.startActivityForResult(intent, requestCode);
     }
 
@@ -345,10 +344,6 @@ public class LoginManager {
      */
     public boolean isAuthCodeFlowEnabled() {
         return authCodeFlowEnabled;
-    }
-
-    private void redirectToInstallApp(@NonNull Activity activity) {
-        new SignupDeeplink(activity, sessionConfiguration.getClientId(), USER_AGENT).execute();
     }
 
     /**
