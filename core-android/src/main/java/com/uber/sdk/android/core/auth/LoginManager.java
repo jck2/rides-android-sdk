@@ -173,33 +173,15 @@ public class LoginManager {
         SsoDeeplink ssoDeeplink = getSsoDeeplink(activity);
 
         if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.REDIRECT_TO_SDK)) {
-            Intent intent = LoginActivity.newIntent(activity, sessionConfiguration, ResponseType.TOKEN,
-                    false, true, true);
+            Intent intent = LoginActivity.newIntent(activity, sessionConfiguration, ResponseType.TOKEN, true);
             activity.startActivityForResult(intent, requestCode);
         } else if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.DEFAULT)) {
             ssoDeeplink.execute(SsoDeeplink.FlowVersion.DEFAULT);
         } else if (isAuthCodeFlowEnabled()) {
             loginForAuthorizationCode(activity);
         } else {
-            loginForImplicitGrantWithFallback(activity);
+            loginForProofKeyExchange(activity);
         }
-    }
-
-    /**
-     * Login using Implicit Grant (Webview)
-     *
-     * @param activity to start Activity on.
-     */
-    @Deprecated
-    public void loginForImplicitGrant(@NonNull Activity activity) {
-
-        if (!legacyUriRedirectHandler.checkValidState(activity, this)) {
-            return;
-        }
-
-        Intent intent = LoginActivity.newIntent(activity, sessionConfiguration,
-                ResponseType.TOKEN, legacyUriRedirectHandler.isLegacyMode());
-        activity.startActivityForResult(intent, requestCode);
     }
 
     /**
@@ -212,24 +194,21 @@ public class LoginManager {
             return;
         }
 
-        Intent intent = LoginActivity.newIntent(activity, sessionConfiguration,
-                ResponseType.CODE, legacyUriRedirectHandler.isLegacyMode());
+        Intent intent = LoginActivity.newIntent(activity, sessionConfiguration, ResponseType.CODE);
         activity.startActivityForResult(intent, requestCode);
     }
 
     /**
-     * Login using Implicit Grant, but if requesting privileged scopes, fallback to redirecting the user to the play
-     * store to install the app.
-     *
+     * login with proof key exchange
      * @param activity to start Activity on.
      */
-    private void loginForImplicitGrantWithFallback(@NonNull Activity activity) {
+    private void loginForProofKeyExchange(@NonNull Activity activity) {
         if (!legacyUriRedirectHandler.checkValidState(activity, this)) {
             return;
         }
 
         Intent intent = LoginActivity.newIntent(activity, sessionConfiguration, ResponseType.TOKEN,
-                legacyUriRedirectHandler.isLegacyMode(), false, true);
+                false, AuthUtils.generateCodeVerifier());
         activity.startActivityForResult(intent, requestCode);
     }
 
@@ -413,31 +392,33 @@ public class LoginManager {
         final AuthenticationError authenticationError
                 = (error != null) ? AuthenticationError.fromString(error) : AuthenticationError.UNKNOWN;
 
-        if (authenticationError.equals(AuthenticationError.CANCELLED)) {
-            // User canceled login
-            callback.onLoginCancel();
-            return;
-        } else if (authenticationError.equals(AuthenticationError.UNAVAILABLE) && isAuthCodeFlowEnabled()) {
-            loginForAuthorizationCode(activity);
-            return;
-        } else if (authenticationError.equals(AuthenticationError.UNAVAILABLE) &&
-                !AuthUtils.isPrivilegeScopeRequired(sessionConfiguration.getScopes())) {
-            loginForImplicitGrant(activity);
-            return;
-        } else if (AuthenticationError.INVALID_APP_SIGNATURE.equals(authenticationError)) {
-            AppProtocol appProtocol = new AppProtocol();
-            String appSignature = appProtocol.getAppSignature(activity);
-            if (appSignature == null) {
-                Log.e(UberSdk.UBER_SDK_LOG_TAG, "There was an error obtaining your Application Signature. Please check "
-                        + "your Application Signature and add it to the developer dashboard at https://developer.uber"
-                        + ".com/dashboard");
-            } else {
-                Log.e(UberSdk.UBER_SDK_LOG_TAG, "Your Application Signature, " + appSignature
-                        + ", does not match one of the registered Application Signatures on the developer dashboard. "
-                        + "Check your settings at https://developer.uber.com/dashboard");
-            }
+        switch (authenticationError) {
+            case CANCELLED:
+                // User canceled login
+                callback.onLoginCancel();
+                break;
+            case UNAVAILABLE:
+                if (isAuthCodeFlowEnabled()) {
+                    loginForAuthorizationCode(activity);
+                } else {
+                    loginForProofKeyExchange(activity);
+                }
+                break;
+            case INVALID_APP_SIGNATURE:
+                AppProtocol appProtocol = new AppProtocol();
+                String appSignature = appProtocol.getAppSignature(activity);
+                if (appSignature == null) {
+                    Log.e(UberSdk.UBER_SDK_LOG_TAG, "There was an error obtaining your Application Signature. Please check "
+                            + "your Application Signature and add it to the developer dashboard at https://developer.uber"
+                            + ".com/dashboard");
+                } else {
+                    Log.e(UberSdk.UBER_SDK_LOG_TAG, "Your Application Signature, " + appSignature
+                            + ", does not match one of the registered Application Signatures on the developer dashboard. "
+                            + "Check your settings at https://developer.uber.com/dashboard");
+                }
+            default:
+                callback.onLoginError(authenticationError);
         }
-        callback.onLoginError(authenticationError);
     }
 
     private void handleResultOk(@Nullable Intent data) {

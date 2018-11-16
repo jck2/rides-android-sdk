@@ -27,6 +27,7 @@ import android.content.Intent;
 import android.content.pm.*;
 
 import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import com.google.common.collect.ImmutableList;
 import com.uber.sdk.android.core.RobolectricTestBase;
 import com.uber.sdk.core.auth.AccessToken;
@@ -41,11 +42,7 @@ import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 
-import static com.uber.sdk.android.core.auth.LoginActivity.EXTRA_FORCE_WEBVIEW;
-import static com.uber.sdk.android.core.auth.LoginActivity.EXTRA_RESPONSE_TYPE;
-import static com.uber.sdk.android.core.auth.LoginActivity.EXTRA_SESSION_CONFIGURATION;
-import static com.uber.sdk.android.core.auth.LoginActivity.EXTRA_SSO_ENABLED;
-import static com.uber.sdk.android.core.auth.LoginActivity.EXTRA_REDIRECT_TO_PLAY_STORE_ENABLED;
+import static com.uber.sdk.android.core.auth.LoginActivity.*;
 import static com.uber.sdk.android.core.auth.LoginManager.EXTRA_ACCESS_TOKEN;
 import static com.uber.sdk.android.core.auth.LoginManager.EXTRA_CODE_RECEIVED;
 import static com.uber.sdk.android.core.auth.LoginManager.EXTRA_ERROR;
@@ -60,9 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.eq;
+import static org.mockito.Matchers.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -145,8 +140,7 @@ public class LoginManagerTest extends RobolectricTestBase {
         verify(activity).startActivityForResult(intentCaptor.capture(), codeCaptor.capture());
 
         final Intent resultIntent = intentCaptor.getValue();
-        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.TOKEN, false,
-                true, true);
+        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.TOKEN, true, false);
         assertThat(codeCaptor.getValue()).isEqualTo(REQUEST_CODE_LOGIN_DEFAULT);
     }
 
@@ -175,13 +169,12 @@ public class LoginManagerTest extends RobolectricTestBase {
         verify(activity).startActivityForResult(intentCaptor.capture(), codeCaptor.capture());
 
         final Intent resultIntent = intentCaptor.getValue();
-        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.CODE, false,
-                false, false);
+        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.CODE, false, false);
         assertThat(codeCaptor.getValue()).isEqualTo(REQUEST_CODE_LOGIN_DEFAULT);
     }
 
     @Test
-    public void login_withSsoNotSupported_andAuthCodeFlowDisabled_shouldLoginWithImplicitGrantParamsAndRedirectToPlayStoreEnabled() {
+    public void login_withSsoNotSupported_andAuthCodeFlowDisabled_shouldLoginWithProofKeyExchangeParams() {
         when(ssoDeeplink.isSupported(REDIRECT_TO_SDK)).thenReturn(false);
         when(ssoDeeplink.isSupported(DEFAULT)).thenReturn(false);
 
@@ -193,31 +186,7 @@ public class LoginManagerTest extends RobolectricTestBase {
         verify(activity).startActivityForResult(intentCaptor.capture(), codeCaptor.capture());
 
         final Intent resultIntent = intentCaptor.getValue();
-        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.TOKEN, false,
-                false, true);
-        assertThat(codeCaptor.getValue()).isEqualTo(REQUEST_CODE_LOGIN_DEFAULT);
-    }
-
-    @Test
-    public void loginForImplicitGrant_withLegacyModeBlocking_shouldNotLogin() {
-        when(legacyUriRedirectHandler.checkValidState(eq(activity), eq(loginManager))).thenReturn(false);
-        loginManager.loginForImplicitGrant(activity);
-
-        verify(activity, never()).startActivityForResult(any(Intent.class), anyInt());
-    }
-
-    @Test
-    public void loginForImplicitGrant_withoutLegacyModeBlocking_shouldLoginWithImplicitGrantParamsAndRedirectToPlayStoreDisabled() {
-        loginManager.loginForImplicitGrant(activity);
-
-        ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
-        ArgumentCaptor<Integer> codeCaptor = ArgumentCaptor.forClass(Integer.class);
-
-        verify(activity).startActivityForResult(intentCaptor.capture(), codeCaptor.capture());
-
-        final Intent resultIntent = intentCaptor.getValue();
-        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.TOKEN, false,
-                false, false);
+        validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.TOKEN, false, true);
         assertThat(codeCaptor.getValue()).isEqualTo(REQUEST_CODE_LOGIN_DEFAULT);
     }
 
@@ -240,7 +209,7 @@ public class LoginManagerTest extends RobolectricTestBase {
 
         final Intent resultIntent = intentCaptor.getValue();
         validateLoginIntentFields(resultIntent, sessionConfiguration, ResponseType.CODE, false,
-                false, false);
+                false);
         assertThat(codeCaptor.getValue()).isEqualTo(REQUEST_CODE_LOGIN_DEFAULT);
     }
 
@@ -320,37 +289,29 @@ public class LoginManagerTest extends RobolectricTestBase {
     }
 
     @Test
-    public void onActivityResult_whenUnavailableAndPrivilegedScopes_shouldTriggerAuthorizationCode() {
+    public void onActivityResult_whenUnavailable_andAuthCodeFlowEnabled_shouldTriggerAuthCodeFlow() {
         Intent intent = new Intent().putExtra(EXTRA_ERROR, AuthenticationError.UNAVAILABLE.toStandardString());
 
         loginManager.setAuthCodeFlowEnabled(true);
         loginManager.onActivityResult(activity, REQUEST_CODE_LOGIN_DEFAULT, Activity.RESULT_CANCELED, intent);
 
-        verify(callback, never()).onLoginError(AuthenticationError.UNAVAILABLE);
+        verify(callback, never()).onLoginError(any(AuthenticationError.class));
 
         ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
 
         verify(activity).startActivityForResult(intentCaptor.capture(), eq(REQUEST_CODE_LOGIN_DEFAULT));
-
-        final Intent capturedIntent = intentCaptor.getValue();
-        final ResponseType responseType = (ResponseType) capturedIntent
-                .getSerializableExtra(EXTRA_RESPONSE_TYPE);
-        final SessionConfiguration loginConfiguration = (SessionConfiguration) capturedIntent
-                .getSerializableExtra(LoginActivity.EXTRA_SESSION_CONFIGURATION);
-
-        assertThat(responseType).isEqualTo(ResponseType.CODE);
-        assertThat(loginConfiguration.getScopes()).containsAll(MIXED_SCOPES);
+        validateLoginIntentFields(intentCaptor.getValue(), sessionConfiguration, ResponseType.CODE, false, false);
     }
 
     @Test
-    public void onActivityResult_whenUnavailableAndGeneralScopesWithAuthCodeEnabled_shouldTriggerAuthorizationCode() {
+    public void onActivityResult_whenUnavailable_andAuthCodeFlowDisabled_shouldTriggerProofKeyExchange() {
         sessionConfiguration = sessionConfiguration.newBuilder().setScopes(GENERAL_SCOPES).build();
         loginManager = new LoginManager(accessTokenStorage, callback,
                 sessionConfiguration);
 
         Intent intent = new Intent().putExtra(EXTRA_ERROR, AuthenticationError.UNAVAILABLE.toStandardString());
 
-        loginManager.setAuthCodeFlowEnabled(true);
+        loginManager.setAuthCodeFlowEnabled(false);
         loginManager.onActivityResult(activity, REQUEST_CODE_LOGIN_DEFAULT, Activity.RESULT_CANCELED, intent);
 
         verify(callback, never()).onLoginError(AuthenticationError.UNAVAILABLE);
@@ -358,54 +319,7 @@ public class LoginManagerTest extends RobolectricTestBase {
         ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
 
         verify(activity).startActivityForResult(intentCaptor.capture(), eq(REQUEST_CODE_LOGIN_DEFAULT));
-
-        final Intent capturedIntent = intentCaptor.getValue();
-        final ResponseType responseType = (ResponseType) capturedIntent
-                .getSerializableExtra(EXTRA_RESPONSE_TYPE);
-        final SessionConfiguration loginConfiguration = (SessionConfiguration) capturedIntent
-                .getSerializableExtra(LoginActivity.EXTRA_SESSION_CONFIGURATION);
-
-        assertThat(responseType).isEqualTo(ResponseType.CODE);
-        assertThat(loginConfiguration.getScopes()).containsAll(GENERAL_SCOPES);
-    }
-
-    @Test
-    public void onActivityResult_whenUnavailableAndPrivilegedScopesNoRedirect_shouldError() {
-        Intent intent = new Intent().putExtra(EXTRA_ERROR, AuthenticationError.UNAVAILABLE.toStandardString());
-        sessionConfiguration = sessionConfiguration.newBuilder().build();
-        loginManager = new LoginManager(accessTokenStorage, callback,
-                sessionConfiguration)
-                .setAuthCodeFlowEnabled(false);
-
-        loginManager.onActivityResult(activity, REQUEST_CODE_LOGIN_DEFAULT, Activity.RESULT_CANCELED, intent);
-
-        verify(callback).onLoginError(AuthenticationError.UNAVAILABLE);
-    }
-
-    @Test
-    public void onActivityResult_whenUnavailableAndGeneralScopes_shouldTriggerImplicitGrant() {
-        sessionConfiguration = sessionConfiguration.newBuilder().setScopes(GENERAL_SCOPES).build();
-        loginManager = new LoginManager(accessTokenStorage, callback,
-                sessionConfiguration);
-
-        Intent intent = new Intent().putExtra(EXTRA_ERROR, AuthenticationError.UNAVAILABLE.toStandardString());
-
-        loginManager.onActivityResult(activity, REQUEST_CODE_LOGIN_DEFAULT, Activity.RESULT_CANCELED, intent);
-
-        verify(callback, never()).onLoginError(AuthenticationError.UNAVAILABLE);
-
-        ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
-
-        verify(activity).startActivityForResult(intentCaptor.capture(), eq(REQUEST_CODE_LOGIN_DEFAULT));
-
-        final Intent capturedIntent = intentCaptor.getValue();
-        final ResponseType responseType = (ResponseType) capturedIntent
-                .getSerializableExtra(EXTRA_RESPONSE_TYPE);
-        final SessionConfiguration loginConfiguration = (SessionConfiguration) capturedIntent
-                .getSerializableExtra(LoginActivity.EXTRA_SESSION_CONFIGURATION);
-
-        assertThat(responseType).isEqualTo(ResponseType.TOKEN);
-        assertThat(loginConfiguration.getScopes()).containsAll(GENERAL_SCOPES);
+        validateLoginIntentFields(intentCaptor.getValue(), sessionConfiguration, ResponseType.TOKEN, false, true);
     }
 
     @Test
@@ -454,14 +368,16 @@ public class LoginManagerTest extends RobolectricTestBase {
             @NonNull Intent loginIntent,
             @NonNull SessionConfiguration expectedSessionConfiguration,
             @NonNull ResponseType expectedResponseType,
-            boolean expectedForceWebview,
             boolean expectedSsoEnabled,
-            boolean expectedRedirectToPlayStoreEnabled) {
+            boolean shouldExpectCodeVerifier) {
         assertThat(loginIntent.getSerializableExtra(EXTRA_SESSION_CONFIGURATION)).isEqualTo(expectedSessionConfiguration);
         assertThat(loginIntent.getSerializableExtra(EXTRA_RESPONSE_TYPE)).isEqualTo(expectedResponseType);
-        assertThat(loginIntent.getBooleanExtra(EXTRA_FORCE_WEBVIEW, false)).isEqualTo(expectedForceWebview);
         assertThat(loginIntent.getBooleanExtra(EXTRA_SSO_ENABLED, false)).isEqualTo(expectedSsoEnabled);
-        assertThat(loginIntent.getBooleanExtra(EXTRA_REDIRECT_TO_PLAY_STORE_ENABLED, false))
-                .isEqualTo(expectedRedirectToPlayStoreEnabled);
+
+        if (shouldExpectCodeVerifier) {
+            assertThat(loginIntent.getStringExtra(EXTRA_CODE_VERIFIER)).isNotNull();
+        } else {
+            assertThat(loginIntent.getStringExtra(EXTRA_CODE_VERIFIER)).isNull();
+        }
     }
 }

@@ -25,23 +25,24 @@ package com.uber.sdk.android.core.auth;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
-import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.support.annotation.NonNull;
-import android.support.annotation.VisibleForTesting;
+import android.support.annotation.Nullable;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Pair;
 import android.webkit.WebView;
 
 import com.uber.sdk.core.auth.AccessToken;
 import com.uber.sdk.core.auth.Scope;
 import com.uber.sdk.core.client.SessionConfiguration;
 
-import java.util.ArrayList;
+import java.io.UnsupportedEncodingException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -54,6 +55,21 @@ class AuthUtils {
     static final String KEY_TOKEN = "access_token";
     static final String KEY_REFRESH_TOKEN = "refresh_token";
     static final String KEY_TOKEN_TYPE = "token_type";
+
+    static final String CODE_CHALLENGE_METHOD_SHA256 = "S256";
+    static final String CODE_CHALLENGE_METHOD_PLAIN = "plain";
+
+    /**
+     * Base64 encoding settings used for generated code verifiers.
+     */
+    private static final int PKCE_BASE64_ENCODE_SETTINGS =
+            Base64.NO_WRAP | Base64.NO_PADDING | Base64.URL_SAFE;
+    /**
+     * The entropy (in bytes) used to generate the code verifier.
+     */
+    public static final int CODE_VERIFIER_ENTROPY = 64;
+    private static final String HASH_ALGORITHM_SHA256 = "SHA-256";
+    private static final String CODE_VERIFIER_CHARACTER_ENCODING = "ISO_8859_1";
 
     /**
      * @param scopeCollection
@@ -257,7 +273,8 @@ class AuthUtils {
     static String buildUrl(
             @NonNull String redirectUri,
             @NonNull ResponseType responseType,
-            @NonNull SessionConfiguration configuration) {
+            @NonNull SessionConfiguration configuration,
+            @Nullable String codeVerifier) {
 
         final String CLIENT_ID_PARAM = "client_id";
         final String ENDPOINT = "login";
@@ -268,9 +285,9 @@ class AuthUtils {
         final String SCOPE_PARAM = "scope";
         final String SHOW_FB_PARAM = "show_fb";
         final String SIGNUP_PARAMS = "signup_params";
+        final String CODE_CHALLENGE = "code_challenge";
+        final String CODE_CHALLENGE_METHOD = "code_challenge_method";
         final String REDIRECT_LOGIN = "{\"redirect_to_login\":true}";
-
-
 
         Uri.Builder builder = new Uri.Builder();
         builder.scheme(HTTPS)
@@ -284,7 +301,33 @@ class AuthUtils {
                 .appendQueryParameter(SHOW_FB_PARAM, "false")
                 .appendQueryParameter(SIGNUP_PARAMS, AuthUtils.createEncodedParam(REDIRECT_LOGIN));
 
+        if (codeVerifier != null) {
+            Pair<String, String> codeChallenge = getCodeChallengeParams(codeVerifier);
+            builder.appendQueryParameter(CODE_CHALLENGE, codeChallenge.first)
+                    .appendQueryParameter(CODE_CHALLENGE_METHOD, codeChallenge.second);
+        }
+
         return builder.build().toString();
+    }
+
+    static String generateCodeVerifier() {
+        SecureRandom randomSource = new SecureRandom();
+        byte[] codeVerifierBytes = new byte[CODE_VERIFIER_ENTROPY];
+        randomSource.nextBytes(codeVerifierBytes);
+        return Base64.encodeToString(codeVerifierBytes, PKCE_BASE64_ENCODE_SETTINGS);
+    }
+
+    private static Pair<String, String> getCodeChallengeParams(String codeVerifier) {
+        try {
+            MessageDigest sha256Digester = MessageDigest.getInstance(HASH_ALGORITHM_SHA256);
+            sha256Digester.update(codeVerifier.getBytes(CODE_VERIFIER_CHARACTER_ENCODING));
+            byte[] digestBytes = sha256Digester.digest();
+            return Pair.create(Base64.encodeToString(digestBytes, PKCE_BASE64_ENCODE_SETTINGS), CODE_CHALLENGE_METHOD_SHA256);
+        } catch (NoSuchAlgorithmException e) {
+            return Pair.create(codeVerifier, CODE_CHALLENGE_METHOD_PLAIN);
+        } catch (UnsupportedEncodingException e) {
+            throw new IllegalStateException("ISO-8859-1 encoding not supported", e);
+        }
     }
 
     private static String getScopes(SessionConfiguration configuration) {

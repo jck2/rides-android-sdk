@@ -22,26 +22,18 @@
 
 package com.uber.sdk.android.core.auth;
 
-import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.annotation.VisibleForTesting;
 import android.support.customtabs.CustomTabsIntent;
 import android.text.TextUtils;
-import android.webkit.WebResourceError;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 
-import com.uber.sdk.android.core.BuildConfig;
-import com.uber.sdk.android.core.R;
-import com.uber.sdk.android.core.install.SignupDeeplink;
 import com.uber.sdk.android.core.utils.CustomTabsHelper;
 import com.uber.sdk.core.client.SessionConfiguration;
 
@@ -49,19 +41,13 @@ import com.uber.sdk.core.client.SessionConfiguration;
  * {@link android.app.Activity} that shows web view for Uber user authentication and authorization.
  */
 public class LoginActivity extends Activity {
-    @VisibleForTesting
-    static final String USER_AGENT = String.format("core-android-v%s-login_manager", BuildConfig.VERSION_NAME);
-
     static final String EXTRA_RESPONSE_TYPE = "RESPONSE_TYPE";
     static final String EXTRA_SESSION_CONFIGURATION = "SESSION_CONFIGURATION";
-    static final String EXTRA_FORCE_WEBVIEW = "FORCE_WEBVIEW";
     static final String EXTRA_SSO_ENABLED = "SSO_ENABLED";
-    static final String EXTRA_REDIRECT_TO_PLAY_STORE_ENABLED = "REDIRECT_TO_PLAY_STORE_ENABLED";
+    static final String EXTRA_CODE_VERIFIER = "CODE_VERIFIER";
 
     static final String ERROR = "error";
 
-    private ResponseType responseType;
-    private SessionConfiguration sessionConfiguration;
     private boolean authStarted;
 
     @VisibleForTesting
@@ -73,7 +59,6 @@ public class LoginActivity extends Activity {
     @VisibleForTesting
     CustomTabsHelper customTabsHelper = new CustomTabsHelper();
 
-
     /**
      * Create an {@link Intent} to pass to this activity
      *
@@ -83,7 +68,7 @@ public class LoginActivity extends Activity {
      * @return an intent that can be passed to this activity
      */
     @NonNull
-    public static Intent newIntent(
+    static Intent newIntent(
             @NonNull Context context,
             @NonNull SessionConfiguration sessionConfiguration,
             @NonNull ResponseType responseType) {
@@ -97,26 +82,6 @@ public class LoginActivity extends Activity {
      * @param context the {@link Context} for the intent
      * @param sessionConfiguration to be used for gather clientId
      * @param responseType that is expected
-     * @param forceWebview Forced to use old webview instead of chrometabs
-     * @return an intent that can be passed to this activity
-     */
-    @NonNull
-    public static Intent newIntent(
-            @NonNull Context context,
-            @NonNull SessionConfiguration sessionConfiguration,
-            @NonNull ResponseType responseType,
-            boolean forceWebview) {
-
-        return newIntent(context, sessionConfiguration, responseType, forceWebview, false, false);
-    }
-
-    /**
-     * Create an {@link Intent} to pass to this activity
-     *
-     * @param context the {@link Context} for the intent
-     * @param sessionConfiguration to be used for gather clientId
-     * @param responseType that is expected
-     * @param forceWebview Forced to use old webview instead of chrometabs
      * @param isSsoEnabled specifies whether to attempt login with SSO
      * @return an intent that can be passed to this activity
      */
@@ -125,16 +90,33 @@ public class LoginActivity extends Activity {
             @NonNull Context context,
             @NonNull SessionConfiguration sessionConfiguration,
             @NonNull ResponseType responseType,
-            boolean forceWebview,
+            boolean isSsoEnabled) {
+
+        return newIntent(context, sessionConfiguration, responseType, isSsoEnabled, null);
+    }
+
+    /**
+     * Create an {@link Intent} to pass to this activity
+     *
+     * @param context the {@link Context} for the intent
+     * @param sessionConfiguration to be used for gather clientId
+     * @param responseType that is expected
+     * @param isSsoEnabled specifies whether to attempt login with SSO
+     * @return an intent that can be passed to this activity
+     */
+    @NonNull
+    static Intent newIntent(
+            @NonNull Context context,
+            @NonNull SessionConfiguration sessionConfiguration,
+            @NonNull ResponseType responseType,
             boolean isSsoEnabled,
-            boolean isRedirectToPlayStoreEnabled) {
+            @Nullable String codeVerifier) {
 
         final Intent data = new Intent(context, LoginActivity.class)
                 .putExtra(EXTRA_SESSION_CONFIGURATION, sessionConfiguration)
                 .putExtra(EXTRA_RESPONSE_TYPE, responseType)
-                .putExtra(EXTRA_FORCE_WEBVIEW, forceWebview)
                 .putExtra(EXTRA_SSO_ENABLED, isSsoEnabled)
-                .putExtra(EXTRA_REDIRECT_TO_PLAY_STORE_ENABLED, isRedirectToPlayStoreEnabled);
+                .putExtra(EXTRA_CODE_VERIFIER, codeVerifier);
 
         return data;
     }
@@ -192,17 +174,19 @@ public class LoginActivity extends Activity {
     protected void loadUrl() {
         Intent intent = getIntent();
 
-        sessionConfiguration = (SessionConfiguration) intent.getSerializableExtra(EXTRA_SESSION_CONFIGURATION);
-        responseType = (ResponseType) intent.getSerializableExtra(EXTRA_RESPONSE_TYPE);
+        SessionConfiguration sessionConfiguration = (SessionConfiguration) intent.getSerializableExtra(EXTRA_SESSION_CONFIGURATION);
+        ResponseType responseType = (ResponseType) intent.getSerializableExtra(EXTRA_RESPONSE_TYPE);
+        boolean isSsoEnabled = intent.getBooleanExtra(EXTRA_SSO_ENABLED, false);
+        String codeVerifier = intent.getStringExtra(EXTRA_CODE_VERIFIER);
 
-        if (!validateRequestParams()) {
+        if (!validateRequestParams(isSsoEnabled, sessionConfiguration, responseType, codeVerifier)) {
             return;
         }
 
         String redirectUri = sessionConfiguration.getRedirectUri() != null ? sessionConfiguration
-                .getRedirectUri() : getApplicationContext().getPackageName().concat(".uberauth://redirect");
+                .getRedirectUri() : getApplicationContext().getPackageName() + "uberauth";
 
-        if (intent.getBooleanExtra(EXTRA_SSO_ENABLED, false)) {
+        if (isSsoEnabled) {
             SsoDeeplink ssoDeeplink = ssoDeeplinkFactory.getSsoDeeplink(this, sessionConfiguration);
 
             if (ssoDeeplink.isSupported(SsoDeeplink.FlowVersion.REDIRECT_TO_SDK)) {
@@ -213,25 +197,8 @@ public class LoginActivity extends Activity {
             return;
         }
 
-        boolean forceWebview = intent.getBooleanExtra(EXTRA_FORCE_WEBVIEW, false);
-        boolean isRedirectToPlayStoreEnabled = intent.getBooleanExtra(EXTRA_REDIRECT_TO_PLAY_STORE_ENABLED, false);
-        if (responseType == ResponseType.CODE) {
-            loadWebPage(redirectUri, ResponseType.CODE, sessionConfiguration, forceWebview);
-        } else if (responseType == ResponseType.TOKEN && !(AuthUtils.isPrivilegeScopeRequired(sessionConfiguration.getScopes())
-                && isRedirectToPlayStoreEnabled)) {
-            loadWebPage(redirectUri, ResponseType.TOKEN, sessionConfiguration, forceWebview);
-        } else {
-            redirectToInstallApp(this);
-        }
-    }
-
-    protected void loadWebPage(String redirectUri, ResponseType responseType, SessionConfiguration sessionConfiguration, boolean forceWebview) {
-        String url = AuthUtils.buildUrl(redirectUri, responseType, sessionConfiguration);
-        if (forceWebview) {
-            loadWebview(url, redirectUri);
-        } else {
-            loadChrometab(url);
-        }
+        String url = AuthUtils.buildUrl(redirectUri, responseType, sessionConfiguration, codeVerifier);
+        loadChrometab(url);
     }
 
     protected boolean handleResponse(@NonNull Uri uri) {
@@ -255,28 +222,10 @@ public class LoginActivity extends Activity {
         return true;
     }
 
-    protected void loadWebview(String url, String redirectUri) {
-        setContentView(R.layout.ub__login_activity);
-        webView = (WebView) findViewById(R.id.ub__login_webview);
-        webView.getSettings().setJavaScriptEnabled(true);
-        webView.getSettings().setAppCacheEnabled(true);
-        webView.getSettings().setDomStorageEnabled(true);
-        webView.setWebViewClient(createOAuthClient(redirectUri));
-        webView.loadUrl(url);
-    }
-
     protected void loadChrometab(String url) {
         final CustomTabsIntent intent = new CustomTabsIntent.Builder().build();
         customTabsHelper.openCustomTab(this, intent, Uri.parse(url), new CustomTabsHelper
                 .BrowserFallback());
-    }
-
-    protected OAuthWebViewClient createOAuthClient(String redirectUri) {
-        if (responseType == ResponseType.TOKEN) {
-            return new AccessTokenClient(redirectUri);
-        } else {
-            return new AuthorizationCodeClient(redirectUri);
-        }
     }
 
     void onError(@NonNull AuthenticationError error) {
@@ -298,19 +247,11 @@ public class LoginActivity extends Activity {
         }
     }
 
-    void onCodeReceived(Uri uri) {
-        try {
-            String code = AuthUtils.parseAuthorizationCode(uri);
-
-            setResult(RESULT_OK, new Intent().putExtra(LoginManager.EXTRA_CODE_RECEIVED, code));
-            finish();
-        } catch (LoginAuthenticationException loginException) {
-            onError(loginException.getAuthenticationError());
-            return;
-        }
-    }
-
-    private boolean validateRequestParams() {
+    private boolean validateRequestParams(
+            boolean isSsoEnabled,
+            @Nullable SessionConfiguration sessionConfiguration,
+            @Nullable ResponseType responseType,
+            @Nullable String codeVerifier) {
         if (sessionConfiguration == null) {
             onError(AuthenticationError.INVALID_PARAMETERS);
             return false;
@@ -327,99 +268,11 @@ public class LoginActivity extends Activity {
             return false;
         }
 
+        if (responseType == ResponseType.TOKEN && codeVerifier == null && !isSsoEnabled) {
+            onError(AuthenticationError.INVALID_CODE_VERIFIER);
+            return false;
+        }
+
         return true;
-    }
-
-    private void redirectToInstallApp(@NonNull Activity activity) {
-        new SignupDeeplink(activity, sessionConfiguration.getClientId(), USER_AGENT).execute();
-    }
-
-    /**
-     * Custom {@link WebViewClient} for authorization.
-     */
-    @VisibleForTesting
-    abstract class OAuthWebViewClient extends WebViewClient {
-
-        @NonNull
-        protected final String redirectUri;
-
-        /**
-         * Initialize the {@link WebView} client.
-         *
-         * @param redirectUri the redirect URI {@link String} that will contain the access token information
-         */
-        public OAuthWebViewClient(@NonNull String redirectUri) {
-            this.redirectUri = redirectUri;
-        }
-
-        /**
-         * add deprecated member "onReceivedError" to solve compatibility issue when API level < 23
-         * @param view
-         * @param errorCode
-         * @param description
-         * @param failingUrl
-         */
-        @Override
-        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-                receivedError();
-            }
-        }
-
-        @TargetApi(23)
-        @Override
-        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-            receivedError();
-        }
-
-        @Override
-        public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
-            receivedError();
-        }
-
-        private void receivedError(){
-            onError(AuthenticationError.CONNECTIVITY_ISSUE);
-        }
-    }
-
-    class AuthorizationCodeClient extends OAuthWebViewClient {
-
-        public AuthorizationCodeClient(@NonNull String redirectUri) {
-            super(redirectUri);
-        }
-
-
-        @Override
-        public void onPageFinished(WebView view, String url) {
-            if (url.startsWith(redirectUri)) {
-                onCodeReceived(Uri.parse(url));
-            }
-        }
-    }
-
-    class AccessTokenClient extends OAuthWebViewClient {
-
-        public AccessTokenClient(@NonNull String redirectUri) {
-            super(redirectUri);
-        }
-
-        @Override
-        public boolean shouldOverrideUrlLoading(WebView view, String url) {
-            // First thing to do is check for error, because the url argument here can be the
-            // redirect URL or in the case of user passing in the wrong redirect URL, url will be
-            // our Uber URL.
-            final Uri uri = Uri.parse(url);
-            final String errorParam = uri.getQueryParameter(ERROR);
-            if (!TextUtils.isEmpty(errorParam)) {
-                onError(AuthenticationError.fromString(errorParam));
-                return true;
-            }
-
-            if (url.startsWith(redirectUri)) {
-                return handleResponse(uri);
-            }
-
-            return super.shouldOverrideUrlLoading(view, url);
-        }
     }
 }

@@ -167,6 +167,11 @@ public enum AuthenticationError {
     INVALID_RESPONSE_TYPE,
 
     /**
+     * The code verifier supplied for a Proof Key Exchange Request was invalid
+     */
+    INVALID_CODE_VERIFIER,
+
+    /**
      * Connect is unavailable at this time.
      */
     UNAVAILABLE;
